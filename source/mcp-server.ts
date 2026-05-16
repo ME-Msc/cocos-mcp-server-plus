@@ -1,6 +1,5 @@
 import * as http from 'http';
 import * as url from 'url';
-import { v4 as uuidv4 } from 'uuid';
 import { MCPServerSettings, ServerStatus, MCPClient, ToolDefinition } from './types';
 import { SceneTools } from './tools/scene-tools';
 import { NodeTools } from './tools/node-tools';
@@ -16,12 +15,14 @@ import { SceneViewTools } from './tools/scene-view-tools';
 import { ReferenceImageTools } from './tools/reference-image-tools';
 import { AssetAdvancedTools } from './tools/asset-advanced-tools';
 import { ValidationTools } from './tools/validation-tools';
+import { GroupedTools } from './tools/grouped-tools';
 
 export class MCPServer {
     private settings: MCPServerSettings;
     private httpServer: http.Server | null = null;
     private clients: Map<string, MCPClient> = new Map();
     private tools: Record<string, any> = {};
+    private groupedTools: GroupedTools | null = null;
     private toolsList: ToolDefinition[] = [];
     private enabledTools: any[] = []; // 存储启用的工具列表
 
@@ -47,6 +48,7 @@ export class MCPServer {
             this.tools.referenceImage = new ReferenceImageTools();
             this.tools.assetAdvanced = new AssetAdvancedTools();
             this.tools.validation = new ValidationTools();
+            this.groupedTools = new GroupedTools(this.tools);
             console.log('[MCPServer] Tools initialized successfully');
         } catch (error) {
             console.error('[MCPServer] Error initializing tools:', error);
@@ -89,60 +91,38 @@ export class MCPServer {
     }
 
     private setupTools(): void {
-        this.toolsList = [];
-        
-        // 如果没有启用工具配置，返回所有工具
-        if (!this.enabledTools || this.enabledTools.length === 0) {
-            for (const [category, toolSet] of Object.entries(this.tools)) {
-                const tools = toolSet.getTools();
-                for (const tool of tools) {
-                    this.toolsList.push({
-                        name: `${category}_${tool.name}`,
-                        description: tool.description,
-                        inputSchema: tool.inputSchema
-                    });
-                }
-            }
-        } else {
-            // 根据启用的工具配置过滤
-            const enabledToolNames = new Set(this.enabledTools.map(tool => `${tool.category}_${tool.name}`));
-            
-            for (const [category, toolSet] of Object.entries(this.tools)) {
-                const tools = toolSet.getTools();
-                for (const tool of tools) {
-                    const toolName = `${category}_${tool.name}`;
-                    if (enabledToolNames.has(toolName)) {
-                        this.toolsList.push({
-                            name: toolName,
-                            description: tool.description,
-                            inputSchema: tool.inputSchema
-                        });
-                    }
-                }
-            }
-        }
-        
+        const groupedTools = this.groupedTools ? this.groupedTools.getTools() : [];
+        const enabledToolNames = this.getEnabledToolNameSet(this.enabledTools);
+        const filteredTools = enabledToolNames.size === 0
+            ? groupedTools
+            : groupedTools.filter(tool => enabledToolNames.has(tool.name));
+
+        this.toolsList = filteredTools.map(tool => this.sanitizeToolDefinition(tool));
+
         console.log(`[MCPServer] Setup tools: ${this.toolsList.length} tools available`);
     }
 
     public getFilteredTools(enabledTools: any[]): ToolDefinition[] {
-        if (!enabledTools || enabledTools.length === 0) {
-            return this.toolsList; // 如果没有过滤配置，返回所有工具
+        const enabledToolNames = this.getEnabledToolNameSet(enabledTools);
+        if (enabledToolNames.size === 0) {
+            return this.toolsList;
         }
-
-        const enabledToolNames = new Set(enabledTools.map(tool => `${tool.category}_${tool.name}`));
         return this.toolsList.filter(tool => enabledToolNames.has(tool.name));
     }
 
     public async executeToolCall(toolName: string, args: any): Promise<any> {
+        if (this.groupedTools?.hasTool(toolName)) {
+            return await this.groupedTools.execute(toolName, args || {});
+        }
+
         const parts = toolName.split('_');
         const category = parts[0];
         const toolMethodName = parts.slice(1).join('_');
-        
+
         if (this.tools[category]) {
             return await this.tools[category].execute(toolMethodName, args);
         }
-        
+
         throw new Error(`Tool ${toolName} not found`);
     }
 
@@ -166,19 +146,19 @@ export class MCPServer {
     private async handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
         const parsedUrl = url.parse(req.url || '', true);
         const pathname = parsedUrl.pathname;
-        
+
         // Set CORS headers
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
         res.setHeader('Content-Type', 'application/json');
-        
+
         if (req.method === 'OPTIONS') {
             res.writeHead(200);
             res.end();
             return;
         }
-        
+
         try {
             if (pathname === '/mcp' && req.method === 'POST') {
                 await this.handleMCPRequest(req, res);
@@ -200,14 +180,14 @@ export class MCPServer {
             res.end(JSON.stringify({ error: 'Internal server error' }));
         }
     }
-    
+
     private async handleMCPRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
         let body = '';
-        
+
         req.on('data', (chunk) => {
             body += chunk.toString();
         });
-        
+
         req.on('end', async () => {
             try {
                 // Enhanced JSON parsing with better error handling
@@ -224,7 +204,7 @@ export class MCPServer {
                         throw new Error(`JSON parsing failed: ${parseError.message}. Original body: ${body.substring(0, 500)}...`);
                     }
                 }
-                
+
                 const response = await this.handleMessage(message);
                 res.writeHead(200);
                 res.end(JSON.stringify(response));
@@ -294,7 +274,7 @@ export class MCPServer {
 
     private fixCommonJsonIssues(jsonStr: string): string {
         let fixed = jsonStr;
-        
+
         // Fix common escape character issues
         fixed = fixed
             // Fix unescaped quotes in strings
@@ -309,7 +289,7 @@ export class MCPServer {
             .replace(/\n/g, '\\n')
             .replace(/\r/g, '\\r')
             .replace(/\t/g, '\\t');
-        
+
         return fixed;
     }
 
@@ -333,25 +313,30 @@ export class MCPServer {
 
     private async handleSimpleAPIRequest(req: http.IncomingMessage, res: http.ServerResponse, pathname: string): Promise<void> {
         let body = '';
-        
+
         req.on('data', (chunk) => {
             body += chunk.toString();
         });
-        
+
         req.on('end', async () => {
             try {
-                // Extract tool name from path like /api/node/set_position
+                // Extract tool name from paths like /api/scene_management or /api/scene/create_node.
                 const pathParts = pathname.split('/').filter(p => p);
-                if (pathParts.length < 3) {
+                if (pathParts.length < 2) {
                     res.writeHead(400);
-                    res.end(JSON.stringify({ error: 'Invalid API path. Use /api/{category}/{tool_name}' }));
+                    res.end(JSON.stringify({ error: 'Invalid API path. Use /api/{tool_name} or /api/{category}/{tool_name}' }));
                     return;
                 }
-                
-                const category = pathParts[1];
-                const toolName = pathParts[2];
-                const fullToolName = `${category}_${toolName}`;
-                
+
+                const fullToolName = pathParts[1] === 'tool'
+                    ? pathParts.slice(2).join('_')
+                    : pathParts.slice(1).join('_');
+                if (!fullToolName) {
+                    res.writeHead(400);
+                    res.end(JSON.stringify({ error: 'Missing tool name in API path' }));
+                    return;
+                }
+
                 // Parse parameters with enhanced error handling
                 let params;
                 try {
@@ -372,17 +357,17 @@ export class MCPServer {
                         return;
                     }
                 }
-                
+
                 // Execute tool
                 const result = await this.executeToolCall(fullToolName, params);
-                
+
                 res.writeHead(200);
                 res.end(JSON.stringify({
                     success: true,
                     tool: fullToolName,
                     result: result
                 }));
-                
+
             } catch (error: any) {
                 console.error('Simple API error:', error);
                 res.writeHead(500);
@@ -397,37 +382,37 @@ export class MCPServer {
 
     private getSimplifiedToolsList(): any[] {
         return this.toolsList.map(tool => {
-            const parts = tool.name.split('_');
-            const category = parts[0];
-            const toolName = parts.slice(1).join('_');
-            
             return {
                 name: tool.name,
-                category: category,
-                toolName: toolName,
+                category: 'mcp',
+                toolName: tool.name,
                 description: tool.description,
-                apiPath: `/api/${category}/${toolName}`,
-                curlExample: this.generateCurlExample(category, toolName, tool.inputSchema)
+                apiPath: `/api/${tool.name}`,
+                curlExample: this.generateCurlExample(tool.name, tool.inputSchema)
             };
         });
     }
 
-    private generateCurlExample(category: string, toolName: string, schema: any): string {
+    private generateCurlExample(toolName: string, schema: any): string {
         // Generate sample parameters based on schema
         const sampleParams = this.generateSampleParams(schema);
         const jsonString = JSON.stringify(sampleParams, null, 2);
-        
-        return `curl -X POST http://127.0.0.1:8585/api/${category}/${toolName} \\
-  -H "Content-Type: application/json" \\
+
+        return `curl -X POST http://127.0.0.1:${this.settings.port}/api/${toolName} \
+  -H "Content-Type: application/json" \
   -d '${jsonString}'`;
     }
 
     private generateSampleParams(schema: any): any {
         if (!schema || !schema.properties) return {};
-        
+
         const sample: any = {};
         for (const [key, prop] of Object.entries(schema.properties as any)) {
             const propSchema = prop as any;
+            if (Array.isArray(propSchema.enum) && propSchema.enum.length > 0) {
+                sample[key] = propSchema.enum[0];
+                continue;
+            }
             switch (propSchema.type) {
                 case 'string':
                     sample[key] = propSchema.default || 'example_string';
@@ -437,6 +422,9 @@ export class MCPServer {
                     break;
                 case 'boolean':
                     sample[key] = propSchema.default || true;
+                    break;
+                case 'array':
+                    sample[key] = [];
                     break;
                 case 'object':
                     sample[key] = propSchema.default || { x: 0, y: 0, z: 0 };
@@ -454,6 +442,74 @@ export class MCPServer {
             this.stop();
             this.start();
         }
+    }
+
+    private getEnabledToolNameSet(enabledTools: any[]): Set<string> {
+        const names = new Set<string>();
+        if (!enabledTools || enabledTools.length === 0) {
+            return names;
+        }
+
+        for (const tool of enabledTools) {
+            if (!tool || typeof tool !== 'object') {
+                continue;
+            }
+
+            if (typeof tool.name === 'string') {
+                names.add(tool.name);
+            }
+            if (typeof tool.category === 'string' && typeof tool.name === 'string') {
+                names.add(`${tool.category}_${tool.name}`);
+            }
+        }
+
+        return names;
+    }
+
+    private sanitizeToolDefinition(tool: ToolDefinition): ToolDefinition {
+        return {
+            ...tool,
+            inputSchema: this.normalizeJsonSchema(tool.inputSchema || { type: 'object', properties: {} })
+        };
+    }
+
+    private normalizeJsonSchema(schema: any): any {
+        if (Array.isArray(schema)) {
+            return schema.map(item => this.normalizeJsonSchema(item));
+        }
+
+        if (!schema || typeof schema !== 'object') {
+            return schema;
+        }
+
+        const normalized: any = { ...schema };
+        if (normalized.type === 'array' && normalized.items === undefined) {
+            normalized.items = {};
+        }
+
+        if (normalized.properties && typeof normalized.properties === 'object') {
+            const properties: Record<string, any> = {};
+            for (const [key, value] of Object.entries(normalized.properties)) {
+                properties[key] = this.normalizeJsonSchema(value);
+            }
+            normalized.properties = properties;
+        }
+
+        if (normalized.items && typeof normalized.items === 'object') {
+            normalized.items = this.normalizeJsonSchema(normalized.items);
+        }
+
+        for (const unionKey of ['oneOf', 'anyOf', 'allOf']) {
+            if (Array.isArray(normalized[unionKey])) {
+                normalized[unionKey] = normalized[unionKey].map((item: any) => this.normalizeJsonSchema(item));
+            }
+        }
+
+        if (normalized.additionalProperties && typeof normalized.additionalProperties === 'object') {
+            normalized.additionalProperties = this.normalizeJsonSchema(normalized.additionalProperties);
+        }
+
+        return normalized;
     }
 }
 

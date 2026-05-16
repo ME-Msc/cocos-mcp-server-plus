@@ -146,7 +146,7 @@ export class SceneTools implements ToolExecutor {
                     method: 'getCurrentSceneInfo',
                     args: []
                 };
-                
+
                 Editor.Message.request('scene', 'execute-scene-script', options).then((result: any) => {
                     resolve(result);
                 }).catch((err2: Error) => {
@@ -175,224 +175,181 @@ export class SceneTools implements ToolExecutor {
     }
 
     private async openScene(scenePath: string): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            // 首先获取场景的UUID
-            Editor.Message.request('asset-db', 'query-uuid', scenePath).then((uuid: string | null) => {
-                if (!uuid) {
-                    throw new Error('Scene not found');
+        return new Promise(async (resolve) => {
+            try {
+                const sceneUuid = scenePath.startsWith('db://') || scenePath.endsWith('.scene')
+                    ? await Editor.Message.request('asset-db', 'query-uuid', scenePath)
+                    : scenePath;
+
+                if (!sceneUuid) {
+                    resolve({ success: false, error: `Scene not found: ${scenePath}` });
+                    return;
                 }
-                
-                // 使用正确的 scene API 打开场景 (需要UUID)
-                return Editor.Message.request('scene', 'open-scene', uuid);
-            }).then(() => {
-                resolve({ success: true, message: `Scene opened: ${scenePath}` });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
+
+                await Editor.Message.request('scene', 'open-scene', sceneUuid);
+                await new Promise(wait => setTimeout(wait, 200));
+                const currentScene = await this.getCurrentScene();
+                resolve({
+                    success: true,
+                    message: `Scene opened: ${scenePath}`,
+                    data: currentScene.data || { uuid: sceneUuid, path: scenePath }
+                });
+            } catch (err: any) {
+                resolve({
+                    success: false,
+                    error: `Failed to open scene '${scenePath}': ${err.message}`
+                });
+            }
         });
     }
 
     private async saveScene(): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('scene', 'save-scene').then(() => {
-                resolve({ success: true, message: 'Scene saved successfully' });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
+        return new Promise(async (resolve) => {
+            try {
+                await Editor.Message.request('scene', 'save-scene');
+                const currentScene = await this.getCurrentScene();
+                resolve({
+                    success: true,
+                    message: 'Scene saved successfully',
+                    data: currentScene.data
+                });
+            } catch (err: any) {
+                resolve({
+                    success: false,
+                    error: `Failed to save current scene: ${err.message}`
+                });
+            }
         });
     }
 
     private async createScene(sceneName: string, savePath: string): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            // 确保路径以.scene结尾
-            const fullPath = savePath.endsWith('.scene') ? savePath : `${savePath}/${sceneName}.scene`;
-            
-            // 使用正确的Cocos Creator 3.8场景格式
-            const sceneContent = JSON.stringify([
-                {
-                    "__type__": "cc.SceneAsset",
-                    "_name": sceneName,
-                    "_objFlags": 0,
-                    "__editorExtras__": {},
-                    "_native": "",
-                    "scene": {
-                        "__id__": 1
-                    }
-                },
-                {
-                    "__type__": "cc.Scene",
-                    "_name": sceneName,
-                    "_objFlags": 0,
-                    "__editorExtras__": {},
-                    "_parent": null,
-                    "_children": [],
-                    "_active": true,
-                    "_components": [],
-                    "_prefab": null,
-                    "_lpos": {
-                        "__type__": "cc.Vec3",
-                        "x": 0,
-                        "y": 0,
-                        "z": 0
+        return new Promise(async (resolve) => {
+            const fullPath = this.normalizeScenePath(sceneName, savePath);
+
+            try {
+                await this.createEditorScene();
+                await this.ensureDefaultSceneNodes();
+                await this.saveSceneToPath(fullPath);
+                await new Promise(wait => setTimeout(wait, 300));
+
+                const uuid = await Editor.Message.request('asset-db', 'query-uuid', fullPath);
+                const sceneList = await this.getSceneList();
+                const createdScene = sceneList.data?.find((scene: any) => scene.uuid === uuid || scene.path === fullPath);
+
+                resolve({
+                    success: true,
+                    message: `Scene '${sceneName}' created successfully`,
+                    data: {
+                        uuid,
+                        url: fullPath,
+                        name: sceneName,
+                        sceneVerified: !!createdScene
                     },
-                    "_lrot": {
-                        "__type__": "cc.Quat",
-                        "x": 0,
-                        "y": 0,
-                        "z": 0,
-                        "w": 1
-                    },
-                    "_lscale": {
-                        "__type__": "cc.Vec3",
-                        "x": 1,
-                        "y": 1,
-                        "z": 1
-                    },
-                    "_mobility": 0,
-                    "_layer": 1073741824,
-                    "_euler": {
-                        "__type__": "cc.Vec3",
-                        "x": 0,
-                        "y": 0,
-                        "z": 0
-                    },
-                    "autoReleaseAssets": false,
-                    "_globals": {
-                        "__id__": 2
-                    },
-                    "_id": "scene"
-                },
-                {
-                    "__type__": "cc.SceneGlobals",
-                    "ambient": {
-                        "__id__": 3
-                    },
-                    "skybox": {
-                        "__id__": 4
-                    },
-                    "fog": {
-                        "__id__": 5
-                    },
-                    "octree": {
-                        "__id__": 6
-                    }
-                },
-                {
-                    "__type__": "cc.AmbientInfo",
-                    "_skyColorHDR": {
-                        "__type__": "cc.Vec4",
-                        "x": 0.2,
-                        "y": 0.5,
-                        "z": 0.8,
-                        "w": 0.520833
-                    },
-                    "_skyColor": {
-                        "__type__": "cc.Vec4",
-                        "x": 0.2,
-                        "y": 0.5,
-                        "z": 0.8,
-                        "w": 0.520833
-                    },
-                    "_skyIllumHDR": 20000,
-                    "_skyIllum": 20000,
-                    "_groundAlbedoHDR": {
-                        "__type__": "cc.Vec4",
-                        "x": 0.2,
-                        "y": 0.2,
-                        "z": 0.2,
-                        "w": 1
-                    },
-                    "_groundAlbedo": {
-                        "__type__": "cc.Vec4",
-                        "x": 0.2,
-                        "y": 0.2,
-                        "z": 0.2,
-                        "w": 1
-                    }
-                },
-                {
-                    "__type__": "cc.SkyboxInfo",
-                    "_envLightingType": 0,
-                    "_envmapHDR": null,
-                    "_envmap": null,
-                    "_envmapLodCount": 0,
-                    "_diffuseMapHDR": null,
-                    "_diffuseMap": null,
-                    "_enabled": false,
-                    "_useHDR": true,
-                    "_editableMaterial": null,
-                    "_reflectionHDR": null,
-                    "_reflectionMap": null,
-                    "_rotationAngle": 0
-                },
-                {
-                    "__type__": "cc.FogInfo",
-                    "_type": 0,
-                    "_fogColor": {
-                        "__type__": "cc.Color",
-                        "r": 200,
-                        "g": 200,
-                        "b": 200,
-                        "a": 255
-                    },
-                    "_enabled": false,
-                    "_fogDensity": 0.3,
-                    "_fogStart": 0.5,
-                    "_fogEnd": 300,
-                    "_fogAtten": 5,
-                    "_fogTop": 1.5,
-                    "_fogRange": 1.2,
-                    "_accurate": false
-                },
-                {
-                    "__type__": "cc.OctreeInfo",
-                    "_enabled": false,
-                    "_minPos": {
-                        "__type__": "cc.Vec3",
-                        "x": -1024,
-                        "y": -1024,
-                        "z": -1024
-                    },
-                    "_maxPos": {
-                        "__type__": "cc.Vec3",
-                        "x": 1024,
-                        "y": 1024,
-                        "z": 1024
-                    },
-                    "_depth": 8
-                }
-            ], null, 2);
-            
-            Editor.Message.request('asset-db', 'create-asset', fullPath, sceneContent).then((result: any) => {
-                // Verify scene creation by checking if it exists
-                this.getSceneList().then((sceneList) => {
-                    const createdScene = sceneList.data?.find((scene: any) => scene.uuid === result.uuid);
-                    resolve({
-                        success: true,
-                        data: {
-                            uuid: result.uuid,
-                            url: result.url,
-                            name: sceneName,
-                            message: `Scene '${sceneName}' created successfully`,
-                            sceneVerified: !!createdScene
-                        },
-                        verificationData: createdScene
-                    });
-                }).catch(() => {
-                    resolve({
-                        success: true,
-                        data: {
-                            uuid: result.uuid,
-                            url: result.url,
-                            name: sceneName,
-                            message: `Scene '${sceneName}' created successfully (verification failed)`
-                        }
-                    });
+                    verificationData: createdScene
                 });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
+            } catch (err: any) {
+                resolve({
+                    success: false,
+                    error: `Failed to create scene '${sceneName}' with Cocos Creator editor APIs: ${err.message}`,
+                    instruction: 'Create the scene manually from Cocos Creator if your editor version does not expose new-scene/save-scene-as messages, then use scene_management.open to open it.'
+                });
+            }
         });
+    }
+
+    private normalizeScenePath(sceneName: string, savePath: string): string {
+        const normalizedBase = savePath.replace(/\\/g, '/').replace(/\/$/, '');
+        if (normalizedBase.endsWith('.scene')) {
+            return normalizedBase.startsWith('db://') ? normalizedBase : `db://assets/${normalizedBase}`;
+        }
+        const fileName = sceneName.endsWith('.scene') ? sceneName : `${sceneName}.scene`;
+        const joinedPath = `${normalizedBase}/${fileName}`;
+        return joinedPath.startsWith('db://') ? joinedPath : `db://assets/${joinedPath}`;
+    }
+
+    private async createEditorScene(): Promise<void> {
+        const attempts = [
+            () => Editor.Message.request('scene', 'new-scene'),
+            () => Editor.Message.request('scene', 'create-scene'),
+            () => Editor.Message.request('scene', 'create-new-scene')
+        ];
+
+        let lastError: any = null;
+        for (const attempt of attempts) {
+            try {
+                await attempt();
+                await new Promise(resolve => setTimeout(resolve, 200));
+                return;
+            } catch (err) {
+                lastError = err;
+            }
+        }
+
+        throw lastError || new Error('No supported new-scene editor message was available');
+    }
+
+    private async saveSceneToPath(scenePath: string): Promise<void> {
+        const attempts = [
+            () => (Editor.Message.request as any)('scene', 'save-scene-as', scenePath),
+            () => (Editor.Message.request as any)('scene', 'save-scene-as', { path: scenePath }),
+            () => (Editor.Message.request as any)('scene', 'save-scene', scenePath)
+        ];
+
+        let lastError: any = null;
+        for (const attempt of attempts) {
+            try {
+                await attempt();
+                return;
+            } catch (err) {
+                lastError = err;
+            }
+        }
+
+        throw lastError || new Error('No supported save-scene-as editor message was available');
+    }
+
+    private async ensureDefaultSceneNodes(): Promise<void> {
+        try {
+            const treeResult: any = await Editor.Message.request('scene', 'query-node-tree');
+            const tree = Array.isArray(treeResult) ? treeResult[0] : treeResult;
+            const rootUuid = tree?.uuid;
+            if (!rootUuid) {
+                return;
+            }
+
+            const children = Array.isArray(tree.children) ? tree.children : [];
+            const hasCamera = children.some((node: any) => /camera/i.test(node.name || '') || this.nodeHasComponent(node, 'cc.Camera'));
+            const hasCanvas = children.some((node: any) => /canvas/i.test(node.name || '') || this.nodeHasComponent(node, 'cc.Canvas'));
+
+            if (!hasCamera) {
+                await this.createDefaultNode('Main Camera', rootUuid, ['cc.Camera']);
+            }
+            if (!hasCanvas) {
+                await this.createDefaultNode('Canvas', rootUuid, ['cc.Canvas', 'cc.UITransform']);
+            }
+        } catch (err) {
+            console.warn('[SceneTools] Failed to ensure default scene nodes:', err);
+        }
+    }
+
+    private nodeHasComponent(node: any, componentType: string): boolean {
+        const components = node?.__comps__ || node?.components || [];
+        return components.some((component: any) => {
+            const type = component.__type__ || component.type || component.cid || '';
+            return type === componentType || String(type).includes(componentType);
+        });
+    }
+
+    private async createDefaultNode(name: string, parentUuid: string, components: string[]): Promise<void> {
+        try {
+            await (Editor.Message.request as any)('scene', 'create-node', {
+                name,
+                parent: parentUuid,
+                components
+            });
+        } catch (err) {
+            console.warn(`[SceneTools] Failed to create default node '${name}':`, err);
+        }
     }
 
     private async getSceneHierarchy(includeComponents: boolean = false): Promise<ToolResponse> {
@@ -415,7 +372,7 @@ export class SceneTools implements ToolExecutor {
                     method: 'getSceneHierarchy',
                     args: [includeComponents]
                 };
-                
+
                 Editor.Message.request('scene', 'execute-scene-script', options).then((result: any) => {
                     resolve(result);
                 }).catch((err2: Error) => {
@@ -442,7 +399,7 @@ export class SceneTools implements ToolExecutor {
         }
 
         if (node.children) {
-            nodeInfo.children = node.children.map((child: any) => 
+            nodeInfo.children = node.children.map((child: any) =>
                 this.buildHierarchy(child, includeComponents)
             );
         }
@@ -451,19 +408,24 @@ export class SceneTools implements ToolExecutor {
     }
 
     private async saveSceneAs(path: string): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            // save-as-scene API 不接受路径参数，会弹出对话框让用户选择
-            (Editor.Message.request as any)('scene', 'save-as-scene').then(() => {
+        return new Promise(async (resolve) => {
+            const sceneName = path.split(/[\\/]/).pop()?.replace(/\.scene$/i, '') || 'NewScene';
+            const scenePath = this.normalizeScenePath(sceneName, path);
+
+            try {
+                await this.saveSceneToPath(scenePath);
+                const uuid = await Editor.Message.request('asset-db', 'query-uuid', scenePath);
                 resolve({
                     success: true,
-                    data: {
-                        path: path,
-                        message: `Scene save-as dialog opened`
-                    }
+                    message: `Scene saved as ${scenePath}`,
+                    data: { uuid, path: scenePath }
                 });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
+            } catch (err: any) {
+                resolve({
+                    success: false,
+                    error: `Failed to save scene as '${scenePath}': ${err.message}`
+                });
+            }
         });
     }
 

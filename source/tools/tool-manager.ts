@@ -1,5 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
-import { ToolConfig, ToolConfiguration, ToolManagerSettings, ToolDefinition } from '../types';
+import { ToolConfig, ToolConfiguration, ToolManagerSettings } from '../types';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -10,7 +9,8 @@ export class ToolManager {
     constructor() {
         this.settings = this.readToolManagerSettings();
         this.initializeAvailableTools();
-        
+        this.reconcileConfigurations();
+
         // 如果没有配置，自动创建一个默认配置
         if (this.settings.configurations.length === 0) {
             console.log('[ToolManager] No configurations found, creating default configuration...');
@@ -79,9 +79,7 @@ export class ToolManager {
     }
 
     private initializeAvailableTools(): void {
-        // 从MCP服务器获取真实的工具列表
         try {
-            // 导入所有工具类
             const { SceneTools } = require('./scene-tools');
             const { NodeTools } = require('./node-tools');
             const { ComponentTools } = require('./component-tools');
@@ -96,8 +94,8 @@ export class ToolManager {
             const { ReferenceImageTools } = require('./reference-image-tools');
             const { AssetAdvancedTools } = require('./asset-advanced-tools');
             const { ValidationTools } = require('./validation-tools');
+            const { GroupedTools } = require('./grouped-tools');
 
-            // 初始化工具实例
             const tools = {
                 scene: new SceneTools(),
                 node: new NodeTools(),
@@ -115,124 +113,62 @@ export class ToolManager {
                 validation: new ValidationTools()
             };
 
-            // 从每个工具类获取工具列表
-            this.availableTools = [];
-            for (const [category, toolSet] of Object.entries(tools)) {
-                const toolDefinitions = toolSet.getTools();
-                toolDefinitions.forEach((tool: any) => {
-                    this.availableTools.push({
-                        category: category,
-                        name: tool.name,
-                        enabled: true, // 默认启用
-                        description: tool.description
-                    });
-                });
-            }
+            const groupedTools = new GroupedTools(tools);
+            this.availableTools = groupedTools.getTools().map((tool: any) => ({
+                category: 'mcp',
+                name: tool.name,
+                enabled: true,
+                description: tool.description
+            }));
 
-            console.log(`[ToolManager] Initialized ${this.availableTools.length} tools from MCP server`);
+            console.log(`[ToolManager] Initialized ${this.availableTools.length} grouped tools from MCP server`);
         } catch (error) {
-            console.error('[ToolManager] Failed to initialize tools from MCP server:', error);
-            // 如果获取失败，使用默认工具列表作为后备
+            console.error('[ToolManager] Failed to initialize grouped tools from MCP server:', error);
             this.initializeDefaultTools();
         }
     }
 
     private initializeDefaultTools(): void {
-        // 默认工具列表作为后备方案
-        const toolCategories = [
-            { category: 'scene', name: '场景工具', tools: [
-                { name: 'getCurrentSceneInfo', description: '获取当前场景信息' },
-                { name: 'getSceneHierarchy', description: '获取场景层级结构' },
-                { name: 'createNewScene', description: '创建新场景' },
-                { name: 'saveScene', description: '保存场景' },
-                { name: 'loadScene', description: '加载场景' }
-            ]},
-            { category: 'node', name: '节点工具', tools: [
-                { name: 'getAllNodes', description: '获取所有节点' },
-                { name: 'findNodeByName', description: '根据名称查找节点' },
-                { name: 'createNode', description: '创建节点' },
-                { name: 'deleteNode', description: '删除节点' },
-                { name: 'setNodeProperty', description: '设置节点属性' },
-                { name: 'getNodeInfo', description: '获取节点信息' }
-            ]},
-            { category: 'component', name: '组件工具', tools: [
-                { name: 'addComponentToNode', description: '添加组件到节点' },
-                { name: 'removeComponentFromNode', description: '从节点移除组件' },
-                { name: 'setComponentProperty', description: '设置组件属性' },
-                { name: 'getComponentInfo', description: '获取组件信息' }
-            ]},
-            { category: 'prefab', name: '预制体工具', tools: [
-                { name: 'createPrefabFromNode', description: '从节点创建预制体' },
-                { name: 'instantiatePrefab', description: '实例化预制体' },
-                { name: 'getPrefabInfo', description: '获取预制体信息' },
-                { name: 'savePrefab', description: '保存预制体' }
-            ]},
-            { category: 'project', name: '项目工具', tools: [
-                { name: 'getProjectInfo', description: '获取项目信息' },
-                { name: 'getAssetList', description: '获取资源列表' },
-                { name: 'createAsset', description: '创建资源' },
-                { name: 'deleteAsset', description: '删除资源' }
-            ]},
-            { category: 'debug', name: '调试工具', tools: [
-                { name: 'getConsoleLogs', description: '获取控制台日志' },
-                { name: 'getPerformanceStats', description: '获取性能统计' },
-                { name: 'validateScene', description: '验证场景' },
-                { name: 'getErrorLogs', description: '获取错误日志' }
-            ]},
-            { category: 'preferences', name: '偏好设置工具', tools: [
-                { name: 'getPreferences', description: '获取偏好设置' },
-                { name: 'setPreferences', description: '设置偏好设置' },
-                { name: 'resetPreferences', description: '重置偏好设置' }
-            ]},
-            { category: 'server', name: '服务器工具', tools: [
-                { name: 'getServerStatus', description: '获取服务器状态' },
-                { name: 'getConnectedClients', description: '获取连接的客户端' },
-                { name: 'getServerLogs', description: '获取服务器日志' }
-            ]},
-            { category: 'broadcast', name: '广播工具', tools: [
-                { name: 'broadcastMessage', description: '广播消息' },
-                { name: 'getBroadcastHistory', description: '获取广播历史' }
-            ]},
-            { category: 'sceneAdvanced', name: '高级场景工具', tools: [
-                { name: 'optimizeScene', description: '优化场景' },
-                { name: 'analyzeScene', description: '分析场景' },
-                { name: 'batchOperation', description: '批量操作' }
-            ]},
-            { category: 'sceneView', name: '场景视图工具', tools: [
-                { name: 'getViewportInfo', description: '获取视口信息' },
-                { name: 'setViewportCamera', description: '设置视口相机' },
-                { name: 'focusOnNode', description: '聚焦到节点' }
-            ]},
-            { category: 'referenceImage', name: '参考图片工具', tools: [
-                { name: 'addReferenceImage', description: '添加参考图片' },
-                { name: 'removeReferenceImage', description: '移除参考图片' },
-                { name: 'getReferenceImages', description: '获取参考图片列表' }
-            ]},
-            { category: 'assetAdvanced', name: '高级资源工具', tools: [
-                { name: 'importAsset', description: '导入资源' },
-                { name: 'exportAsset', description: '导出资源' },
-                { name: 'processAsset', description: '处理资源' }
-            ]},
-            { category: 'validation', name: '验证工具', tools: [
-                { name: 'validateProject', description: '验证项目' },
-                { name: 'validateAssets', description: '验证资源' },
-                { name: 'generateReport', description: '生成报告' }
-            ]}
+        const fallbackTools = [
+            'scene_management',
+            'scene_hierarchy',
+            'node_lifecycle',
+            'node_query',
+            'node_transform',
+            'component_manage',
+            'component_query',
+            'component_property',
+            'component_script',
+            'prefab_browse',
+            'prefab_lifecycle',
+            'prefab_instance',
+            'project_manage',
+            'project_asset',
+            'project_build',
+            'debug_console',
+            'debug_logs',
+            'preferences_manage',
+            'server_info',
+            'broadcast_message',
+            'scene_property',
+            'scene_clipboard',
+            'scene_execution',
+            'scene_view_control',
+            'reference_image_manage',
+            'reference_image_view',
+            'asset_manage',
+            'asset_analyze',
+            'validation_utils'
         ];
 
-        this.availableTools = [];
-        toolCategories.forEach(category => {
-            category.tools.forEach(tool => {
-                this.availableTools.push({
-                    category: category.category,
-                    name: tool.name,
-                    enabled: true, // 默认启用
-                    description: tool.description
-                });
-            });
-        });
+        this.availableTools = fallbackTools.map(name => ({
+            category: 'mcp',
+            name,
+            enabled: true,
+            description: `Grouped MCP tool: ${name}`
+        }));
 
-        console.log(`[ToolManager] Initialized ${this.availableTools.length} default tools`);
+        console.log(`[ToolManager] Initialized ${this.availableTools.length} fallback grouped tools`);
     }
 
     public getAvailableTools(): ToolConfig[] {
@@ -256,7 +192,7 @@ export class ToolManager {
         }
 
         const config: ToolConfiguration = {
-            id: uuidv4(),
+            id: this.generateId(),
             name,
             description,
             tools: this.availableTools.map(tool => ({ ...tool })),
@@ -297,11 +233,11 @@ export class ToolManager {
         }
 
         this.settings.configurations.splice(configIndex, 1);
-        
+
         // 如果删除的是当前配置，清空当前配置ID
         if (this.settings.currentConfigId === configId) {
-            this.settings.currentConfigId = this.settings.configurations.length > 0 
-                ? this.settings.configurations[0].id 
+            this.settings.currentConfigId = this.settings.configurations.length > 0
+                ? this.settings.configurations[0].id
                 : '';
         }
 
@@ -320,7 +256,7 @@ export class ToolManager {
 
     public updateToolStatus(configId: string, category: string, toolName: string, enabled: boolean): void {
         console.log(`Backend: Updating tool status - configId: ${configId}, category: ${category}, toolName: ${toolName}, enabled: ${enabled}`);
-        
+
         const config = this.settings.configurations.find(config => config.id === configId);
         if (!config) {
             console.error(`Backend: Config not found with ID: ${configId}`);
@@ -336,10 +272,10 @@ export class ToolManager {
         }
 
         console.log(`Backend: Found tool: ${tool.name}, current enabled: ${tool.enabled}, new enabled: ${enabled}`);
-        
+
         tool.enabled = enabled;
         config.updatedAt = new Date().toISOString();
-        
+
         console.log(`Backend: Tool updated, saving settings...`);
         this.saveSettings();
         console.log(`Backend: Settings saved successfully`);
@@ -349,7 +285,7 @@ export class ToolManager {
         console.log(`Backend: updateToolStatusBatch called with configId: ${configId}`);
         console.log(`Backend: Current configurations count: ${this.settings.configurations.length}`);
         console.log(`Backend: Current config IDs:`, this.settings.configurations.map(c => c.id));
-        
+
         const config = this.settings.configurations.find(config => config.id === configId);
         if (!config) {
             console.error(`Backend: Config not found with ID: ${configId}`);
@@ -382,9 +318,9 @@ export class ToolManager {
 
     public importConfiguration(configJson: string): ToolConfiguration {
         const config = this.importToolConfiguration(configJson);
-        
+
         // 生成新的ID和时间戳
-        config.id = uuidv4();
+        config.id = this.generateId();
         config.createdAt = new Date().toISOString();
         config.updatedAt = new Date().toISOString();
 
@@ -417,9 +353,52 @@ export class ToolManager {
         };
     }
 
+    private reconcileConfigurations(): void {
+        if (this.settings.configurations.length === 0) {
+            return;
+        }
+
+        const availableByKey = new Map(this.availableTools.map(tool => [`${tool.category}:${tool.name}`, tool]));
+        let changed = false;
+
+        for (const config of this.settings.configurations) {
+            const previousTools = Array.isArray(config.tools) ? config.tools : [];
+            const previousByKey = new Map(previousTools.map(tool => [`${tool.category}:${tool.name}`, tool]));
+            const matchingOldTools = previousTools.filter(tool => availableByKey.has(`${tool.category}:${tool.name}`));
+
+            if (matchingOldTools.length === 0 || previousTools.length !== this.availableTools.length) {
+                config.tools = this.availableTools.map(tool => {
+                    const oldTool = previousByKey.get(`${tool.category}:${tool.name}`);
+                    return {
+                        ...tool,
+                        enabled: oldTool ? oldTool.enabled : true
+                    };
+                });
+                config.updatedAt = new Date().toISOString();
+                changed = true;
+            }
+        }
+
+        const currentExists = this.settings.configurations.some(config => config.id === this.settings.currentConfigId);
+        if (!currentExists) {
+            this.settings.currentConfigId = this.settings.configurations[0]?.id || '';
+            changed = true;
+        }
+
+        if (changed) {
+            this.saveToolManagerSettings(this.settings);
+        }
+    }
+
+    private generateId(): string {
+        const randomPart = Math.random().toString(36).slice(2, 10);
+        const timePart = Date.now().toString(36);
+        return `${timePart}-${randomPart}`;
+    }
+
     private saveSettings(): void {
         console.log(`Backend: Saving settings, current configs count: ${this.settings.configurations.length}`);
         this.saveToolManagerSettings(this.settings);
         console.log(`Backend: Settings saved to file`);
     }
-} 
+}

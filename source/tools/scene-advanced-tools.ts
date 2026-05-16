@@ -1,4 +1,4 @@
-import { ToolDefinition, ToolResponse, ToolExecutor } from '../types';
+﻿import { ToolDefinition, ToolResponse, ToolExecutor } from '../types';
 
 export class SceneAdvancedTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
@@ -191,6 +191,7 @@ export class SceneAdvancedTools implements ToolExecutor {
                         },
                         args: {
                             type: 'array',
+                            items: {},
                             description: 'Method arguments',
                             default: []
                         }
@@ -214,6 +215,7 @@ export class SceneAdvancedTools implements ToolExecutor {
                         },
                         args: {
                             type: 'array',
+                            items: {},
                             description: 'Method arguments',
                             default: []
                         }

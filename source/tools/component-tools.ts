@@ -1,4 +1,4 @@
-import { ToolDefinition, ToolResponse, ToolExecutor, ComponentInfo } from '../types';
+﻿import { ToolDefinition, ToolResponse, ToolExecutor, ComponentInfo } from '../types';
 
 export class ComponentTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
@@ -1090,78 +1090,91 @@ export class ComponentTools implements ToolExecutor {
 
     private async attachScript(nodeUuid: string, scriptPath: string): Promise<ToolResponse> {
         return new Promise(async (resolve) => {
-            // 从脚本路径提取组件类名
-            const scriptName = scriptPath.split('/').pop()?.replace('.ts', '').replace('.js', '');
+            const scriptNameMatch = scriptPath.match(/([^\\/]+?)(?:\.(ts|js))?$/i);
+            const scriptName = scriptNameMatch ? scriptNameMatch[1] : null;
             if (!scriptName) {
                 resolve({ success: false, error: 'Invalid script path' });
                 return;
             }
-            // 先查找节点上是否已存在该脚本组件
-            const allComponentsInfo = await this.getComponents(nodeUuid);
-            if (allComponentsInfo.success && allComponentsInfo.data?.components) {
-                const existingScript = allComponentsInfo.data.components.find((comp: any) => comp.type === scriptName);
-                if (existingScript) {
-                    resolve({
-                        success: true,
-                        message: `Script '${scriptName}' already exists on node`,
-                        data: {
-                            nodeUuid: nodeUuid,
-                            componentName: scriptName,
-                            existing: true
-                        }
-                    });
-                    return;
+
+            const matchesScript = (component: any) => {
+                const type = String(component.type || component.name || '');
+                return type === scriptName || type.endsWith(`/${scriptName}`) || type.includes(scriptName);
+            };
+
+            const existingComponents = await this.getComponents(nodeUuid);
+            if (existingComponents.success && existingComponents.data?.components?.some(matchesScript)) {
+                resolve({
+                    success: true,
+                    message: `Script '${scriptName}' already exists on node`,
+                    data: { nodeUuid, componentName: scriptName, existing: true }
+                });
+                return;
+            }
+
+            const candidates = new Set<string>([scriptName]);
+            if (/^db:\/\//.test(scriptPath)) {
+                candidates.add(scriptPath);
+                try {
+                    const uuid = await Editor.Message.request('asset-db', 'query-uuid', scriptPath);
+                    if (uuid) {
+                        candidates.add(uuid as string);
+                    }
+                } catch (err) {
+                    console.warn(`[ComponentTools] Failed to resolve script UUID for ${scriptPath}:`, err);
                 }
             }
-            // 首先尝试直接使用脚本名称作为组件类型
-            Editor.Message.request('scene', 'create-component', {
-                uuid: nodeUuid,
-                component: scriptName  // 使用脚本名称而非UUID
-            }).then(async (result: any) => {
-                // 等待一段时间让Editor完成组件添加
-                await new Promise(resolve => setTimeout(resolve, 100));
-                // 重新查询节点信息验证脚本是否真的添加成功
-                const allComponentsInfo2 = await this.getComponents(nodeUuid);
-                if (allComponentsInfo2.success && allComponentsInfo2.data?.components) {
-                    const addedScript = allComponentsInfo2.data.components.find((comp: any) => comp.type === scriptName);
-                    if (addedScript) {
-                        resolve({
-                            success: true,
-                            message: `Script '${scriptName}' attached successfully`,
-                            data: {
-                                nodeUuid: nodeUuid,
-                                componentName: scriptName,
-                                existing: false
-                            }
-                        });
-                    } else {
-                        resolve({
-                            success: false,
-                            error: `Script '${scriptName}' was not found on node after addition. Available components: ${allComponentsInfo2.data.components.map((c: any) => c.type).join(', ')}`
-                        });
-                    }
-                } else {
-                    resolve({
-                        success: false,
-                        error: `Failed to verify script addition: ${allComponentsInfo2.error || 'Unable to get node components'}`
+
+            let lastError: any = null;
+            let created = false;
+            for (const componentId of candidates) {
+                try {
+                    await Editor.Message.request('scene', 'create-component', {
+                        uuid: nodeUuid,
+                        component: componentId
                     });
+                    created = true;
+                    break;
+                } catch (err) {
+                    lastError = err;
                 }
-            }).catch((err: Error) => {
-                // 备用方案：使用场景脚本
+            }
+
+            if (!created) {
                 const options = {
                     name: 'cocos-mcp-server',
                     method: 'attachScript',
                     args: [nodeUuid, scriptPath]
                 };
-                Editor.Message.request('scene', 'execute-scene-script', options).then((result: any) => {
+                try {
+                    const result: any = await Editor.Message.request('scene', 'execute-scene-script', options);
                     resolve(result);
-                }).catch(() => {
-                    resolve({ 
-                        success: false, 
-                        error: `Failed to attach script '${scriptName}': ${err.message}`,
-                        instruction: 'Please ensure the script is properly compiled and exported as a Component class. You can also manually attach the script through the Properties panel in the editor.'
+                    return;
+                } catch (sceneErr: any) {
+                    resolve({
+                        success: false,
+                        error: `Failed to attach script '${scriptName}': ${lastError?.message || sceneErr.message}`,
+                        instruction: 'Ensure the script is compiled, extends cc.Component, has a class name matching the exported component, and the asset path is db://assets/...'
                     });
+                    return;
+                }
+            }
+
+            await new Promise(wait => setTimeout(wait, 500));
+            const afterAttach = await this.getComponents(nodeUuid);
+            if (afterAttach.success && afterAttach.data?.components?.some(matchesScript)) {
+                resolve({
+                    success: true,
+                    message: `Script '${scriptName}' attached successfully`,
+                    data: { nodeUuid, componentName: scriptName, existing: false }
                 });
+                return;
+            }
+
+            resolve({
+                success: false,
+                error: `Script '${scriptName}' was requested but was not found on the node after attachment. Available components: ${afterAttach.data?.components?.map((component: any) => component.type).join(', ') || 'unknown'}`,
+                instruction: 'If Cocos reports missingScript, wait for TypeScript compilation to finish and try again with the db:// script asset path.'
             });
         });
     }

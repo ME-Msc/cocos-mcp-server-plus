@@ -1,4 +1,4 @@
-import { ToolDefinition, ToolResponse, ToolExecutor } from '../types';
+﻿import { ToolDefinition, ToolResponse, ToolExecutor } from '../types';
 
 export class PreferencesTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
@@ -16,6 +16,7 @@ export class PreferencesTools implements ToolExecutor {
                         },
                         args: {
                             type: 'array',
+                            items: {},
                             description: 'Additional arguments to pass to the tab'
                         }
                     }

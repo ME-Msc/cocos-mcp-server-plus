@@ -52,6 +52,50 @@ export const methods: { [key: string]: (...any: any) => any } = {
         }
     },
 
+    attachScript(nodeUuid: string, scriptPath: string) {
+        try {
+            const { director, js } = require('cc');
+            const scene = director.getScene();
+            if (!scene) {
+                return { success: false, error: 'No active scene' };
+            }
+
+            const node = scene.getChildByUuid(nodeUuid);
+            if (!node) {
+                return { success: false, error: `Node with UUID ${nodeUuid} not found` };
+            }
+
+            const scriptNameMatch = scriptPath.match(/([^\\/]+?)(?:\.(ts|js))?$/i);
+            const scriptName = scriptNameMatch ? scriptNameMatch[1] : null;
+            if (!scriptName) {
+                return { success: false, error: 'Invalid script path' };
+            }
+
+            const ComponentClass = js.getClassByName(scriptName);
+            if (!ComponentClass) {
+                return { success: false, error: `Script component '${scriptName}' not found. Ensure the script is compiled and the class name matches the file name.` };
+            }
+
+            const existing = node.getComponent(ComponentClass);
+            if (existing) {
+                return {
+                    success: true,
+                    message: `Script '${scriptName}' already exists on node`,
+                    data: { nodeUuid, componentName: scriptName, existing: true }
+                };
+            }
+
+            const component = node.addComponent(ComponentClass);
+            return {
+                success: true,
+                message: `Script '${scriptName}' attached successfully`,
+                data: { nodeUuid, componentName: scriptName, componentId: component.uuid }
+            };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
     /**
      * Remove component from a node
      */

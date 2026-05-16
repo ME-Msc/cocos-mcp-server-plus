@@ -6,6 +6,21 @@ import { ToolManager } from './tools/tool-manager';
 let mcpServer: MCPServer | null = null;
 let toolManager: ToolManager;
 
+function checkRuntimeDependencies(): void {
+    const missing: string[] = [];
+    for (const dependency of ['vue', 'fs-extra']) {
+        try {
+            require.resolve(dependency);
+        } catch (_) {
+            missing.push(dependency);
+        }
+    }
+
+    if (missing.length > 0) {
+        console.warn(`[Cocos MCP Server] Missing extension dependencies: ${missing.join(', ')}. Run npm install inside the extension folder, then reload Cocos Creator.`);
+    }
+}
+
 /**
  * @en Registration method for the main process of Extension
  * @zh 为扩展的主进程的注册方法
@@ -16,10 +31,22 @@ export const methods: { [key: string]: (...any: any) => any } = {
      * @zh 打开 MCP 服务器面板
      */
     openPanel() {
-        Editor.Panel.open('cocos-mcp-server');
+        try {
+            Editor.Panel.open('cocos-mcp-server');
+        } catch (error) {
+            console.warn('[MCP插件] openPanel failed, trying default panel id', error);
+            Editor.Panel.open('cocos-mcp-server.default');
+        }
     },
 
-
+    openToolManager() {
+        try {
+            Editor.Panel.open('cocos-mcp-server');
+        } catch (error) {
+            console.warn('[MCP插件] openToolManager failed, trying default panel id', error);
+            Editor.Panel.open('cocos-mcp-server.default');
+        }
+    },
 
     /**
      * @en Start the MCP server
@@ -66,14 +93,22 @@ export const methods: { [key: string]: (...any: any) => any } = {
      * @zh 更新服务器设置
      */
     updateSettings(settings: MCPServerSettings) {
-        saveSettings(settings);
+        const mergedSettings = { ...readSettings(), ...settings };
+        saveSettings(mergedSettings);
+
+        const wasRunning = !!mcpServer?.getStatus().running;
         if (mcpServer) {
             mcpServer.stop();
-            mcpServer = new MCPServer(settings);
-            mcpServer.start();
-        } else {
-            mcpServer = new MCPServer(settings);
-            mcpServer.start();
+        }
+
+        mcpServer = new MCPServer(mergedSettings);
+        const enabledTools = toolManager.getEnabledTools();
+        mcpServer.updateEnabledTools(enabledTools);
+
+        if (wasRunning) {
+            mcpServer.start().catch(err => {
+                console.error('Failed to restart MCP server after settings update:', err);
+            });
         }
     },
 
@@ -87,13 +122,13 @@ export const methods: { [key: string]: (...any: any) => any } = {
 
     getFilteredToolsList() {
         if (!mcpServer) return [];
-        
+
         // 获取当前启用的工具
         const enabledTools = toolManager.getEnabledTools();
-        
+
         // 更新MCP服务器的启用工具列表
         mcpServer.updateEnabledTools(enabledTools);
-        
+
         return mcpServer.getFilteredTools(enabledTools);
     },
     /**
@@ -158,15 +193,15 @@ export const methods: { [key: string]: (...any: any) => any } = {
             if (!currentConfig) {
                 throw new Error('没有当前配置');
             }
-            
+
             toolManager.updateToolStatus(currentConfig.id, category, toolName, enabled);
-            
+
             // 更新MCP服务器的工具列表
             if (mcpServer) {
                 const enabledTools = toolManager.getEnabledTools();
                 mcpServer.updateEnabledTools(enabledTools);
             }
-            
+
             return { success: true };
         } catch (error: any) {
             throw new Error(`更新工具状态失败: ${error.message}`);
@@ -176,20 +211,20 @@ export const methods: { [key: string]: (...any: any) => any } = {
     async updateToolStatusBatch(updates: any[]) {
         try {
             console.log(`[Main] updateToolStatusBatch called with updates count:`, updates ? updates.length : 0);
-            
+
             const currentConfig = toolManager.getCurrentConfiguration();
             if (!currentConfig) {
                 throw new Error('没有当前配置');
             }
-            
+
             toolManager.updateToolStatusBatch(currentConfig.id, updates);
-            
+
             // 更新MCP服务器的工具列表
             if (mcpServer) {
                 const enabledTools = toolManager.getEnabledTools();
                 mcpServer.updateEnabledTools(enabledTools);
             }
-            
+
             return { success: true };
         } catch (error: any) {
             throw new Error(`批量更新工具状态失败: ${error.message}`);
@@ -223,18 +258,19 @@ export const methods: { [key: string]: (...any: any) => any } = {
  */
 export function load() {
     console.log('Cocos MCP Server extension loaded');
-    
+    checkRuntimeDependencies();
+
     // 初始化工具管理器
     toolManager = new ToolManager();
-    
+
     // 读取设置
     const settings = readSettings();
     mcpServer = new MCPServer(settings);
-    
+
     // 初始化MCP服务器的工具列表
     const enabledTools = toolManager.getEnabledTools();
     mcpServer.updateEnabledTools(enabledTools);
-    
+
     // 如果设置了自动启动，则启动服务器
     if (settings.autoStart) {
         mcpServer.start().catch(err => {
